@@ -23,7 +23,7 @@ log "Containers are ready."
 # --- EXECUTION ---
 payload=$(cat)
 
-if ! echo "$payload" | jq -e empty > /dev/null; then
+if ! echo "$payload" | jq -e > /dev/null 2>&1; then
     log "ERROR: Invalid JSON received from Neovim."
     exit 1
 fi
@@ -44,11 +44,7 @@ fi
 
 log "Processing $(echo "$docs" | wc -l) documents through Logstash..."
 
-# --- THE NEW CORE LOGIC ---
-# Pipe the docs to the Python script. It handles sending, receiving,
-# ordering, and handling drops. It returns an ordered, line-delimited
-# JSON stream with 'null' for dropped docs.
-logstash_results=$(echo "$docs" | uv run "$LOGSTASH_PROCESSOR_SCRIPT")
+logstash_results="$(echo "$docs" | uv run "$LOGSTASH_PROCESSOR_SCRIPT")"
 
 if [ -z "$logstash_results" ]; then
     log "ERROR: Logstash processor returned no results."
@@ -60,11 +56,14 @@ log "Logstash processing complete. Re-creating docs for Elasticsearch..."
 # --- REBUILD THE ES PAYLOAD ---
 # Re-assemble the Logstash results into the final array of "_source" objects
 # for the Elasticsearch simulate API. jq handles the 'null' values correctly.
+echo "$logstash_results"
 final_docs=$(echo "$logstash_results" | jq -s 'map(if . == null then null else { "_source": . } end)')
+echo "final_docs: $final_docs"
 
 # Create the final payload for the ES simulator script
 final_payload=$(jq -n --argjson p "$pipeline_def" --argjson d "$final_docs" \
   '{ "pipeline": $p, "docs": $d }')
+#echo "final_payload: $final_payload"
 
 log "Running final Elasticsearch pipeline simulation..."
 

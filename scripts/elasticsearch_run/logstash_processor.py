@@ -3,9 +3,11 @@
 # dependencies = [
 #   "flask",
 #   "requests",
+#   "click",
 # ]
 # ///
 
+import click
 import json
 import logging
 import sys
@@ -38,6 +40,15 @@ results_queue = Queue()
 app = Flask(__name__)
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
+
+def secho(text, file=None, nl=None, err=None, color=None, **styles):
+    pass
+
+def echo(text, file=None, nl=None, err=None, color=None, **styles):
+    pass
+
+click.echo = echo
+click.secho = secho
 
 @app.route('/', methods=['POST'])
 def receive_event_from_logstash():
