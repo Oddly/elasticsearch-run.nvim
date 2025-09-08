@@ -30,6 +30,15 @@ do
     end
   end, { desc = "Live-run ES pipeline (vsplit)" })
 
+  vim.api.nvim_create_user_command("ElasticLogstash", function()
+    local ok, m = pcall(require, ns)
+    if ok and type(m.run_with_logstash) == "function" then
+      m.run_with_logstash()
+    else
+      vim.notify("elasticsearch_run.run_with_logstash() not found", vim.log.levels.WARN)
+    end
+  end, { desc = "Run through Logstash → Elasticsearch pipeline (popup)" })
+
   vim.api.nvim_create_user_command("ESContainerDestroy", function()
     local cfg = req("config").resolve() -- resolve at call time
     if not (cfg.es_manager_path and vim.uv.fs_stat(cfg.es_manager_path)) then
@@ -38,6 +47,15 @@ do
     end
     vim.fn.jobstart({ "uv", "run", cfg.es_manager_path, "destroy" }, { detach = true })
   end, { desc = "Stops and removes the ES container and its data volume." })
+
+  vim.api.nvim_create_user_command("LogstashContainerDestroy", function()
+    local cfg = req("config").resolve() -- resolve at call time
+    if not (cfg.logstash_manager_path and vim.uv.fs_stat(cfg.logstash_manager_path)) then
+      vim.notify("Logstash manager script not found in plugin (scripts/elasticsearch_run/manage_logstash_container.py)", vim.log.levels.ERROR)
+      return
+    end
+    vim.fn.jobstart({ "uv", "run", cfg.logstash_manager_path, "destroy" }, { detach = true })
+  end, { desc = "Stops and removes the Logstash container and its data volume." })
 end
 
 -- Autorun on InsertLeave when live output window is open
@@ -70,6 +88,7 @@ do
   local map = vim.keymap.set
   map("n", "<leader>p", "<cmd>ElasticRun<CR>", { desc = "Run ES pipeline (popup)", silent = true })
   map("n", "<leader>R", "<cmd>ElasticLive<CR>", { desc = "Live-run ES pipeline (vsplit)", silent = true })
+  map("n", "<leader>L", "<cmd>ElasticLogstash<CR>", { desc = "Run Logstash → ES pipeline (popup)", silent = true })
 end
 
 -- Tooling help

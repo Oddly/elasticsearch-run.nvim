@@ -10,6 +10,7 @@ import sys
 import docker
 
 CONTAINER_NAME = "elasticsearch-dev"
+DEFAULT_IMAGE = "docker.elastic.co/elasticsearch/elasticsearch:latest"
 
 try:
     client = docker.from_env()
@@ -18,9 +19,39 @@ except docker.errors.DockerException:
     print("Is the Docker daemon running?", file=sys.stderr)
     sys.exit(1)
 
-def start_container():
+def start_container(image=None):
+    if image is None:
+        image = DEFAULT_IMAGE
+    
     try:
         container = client.containers.get(CONTAINER_NAME)
+        
+        # Check if existing container uses the same image
+        existing_image = container.image.tags[0] if container.image.tags else container.image.id
+        if existing_image != image:
+            print(f"Container '{CONTAINER_NAME}' exists but uses different image:")
+            print(f"  Existing: {existing_image}")
+            print(f"  Requested: {image}")
+            print("Recreating container with new image...")
+            
+            # Stop and remove existing container
+            if container.status == 'running':
+                container.stop()
+            container.remove()
+            
+            # Create new container with requested image
+            client.containers.run(
+                image,
+                name=CONTAINER_NAME,
+                ports={"9200/tcp": 9200},
+                environment=["discovery.type=single-node", "xpack.security.enabled=false"],
+                detach=True,
+                remove=False,
+            )
+            print("Container recreated and started.")
+            return
+        
+        # Same image, just start if not running
         if container.status == 'running':
             print(f"Container '{CONTAINER_NAME}' is already running.")
             return
@@ -31,9 +62,8 @@ def start_container():
     except docker.errors.NotFound:
         print(f"Container '{CONTAINER_NAME}' not found. Creating and starting...")
         try:
-            # You may want to update this version over time
             client.containers.run(
-                "docker.elastic.co/elasticsearch/elasticsearch:8.16.4",
+                image,
                 name=CONTAINER_NAME,
                 ports={"9200/tcp": 9200},
                 environment=["discovery.type=single-node", "xpack.security.enabled=false"],
@@ -70,16 +100,24 @@ def destroy_container():
         print(f"An error occurred during removal: {e}", file=sys.stderr)
 
 if __name__ == "__main__":
-    # If a command IS provided (stop, destroy)...
-    if len(sys.argv) > 1:
-        command = sys.argv[1]
-        if command == "stop":
-            stop_container()
-        elif command == "destroy":
-            destroy_container()
-        else:
-            print(f"Unknown command: {command}", file=sys.stderr)
-            sys.exit(1)
-    # If NO command is provided, run the default action.
+    if len(sys.argv) < 2:
+        print("Usage: manage_es_container.py [start|stop|destroy] [image]", file=sys.stderr)
+        print("  start [image] - Start container (optionally with specific image)", file=sys.stderr)
+        print("  stop          - Stop container", file=sys.stderr)
+        print("  destroy       - Stop and remove container", file=sys.stderr)
+        sys.exit(1)
+    
+    command = sys.argv[1]
+    image = None
+    if len(sys.argv) > 2:
+        image = sys.argv[2]
+    
+    if command == "start":
+        start_container(image)
+    elif command == "stop":
+        stop_container()
+    elif command == "destroy":
+        destroy_container()
     else:
-        start_container()
+        print(f"Unknown command: {command}", file=sys.stderr)
+        sys.exit(1)

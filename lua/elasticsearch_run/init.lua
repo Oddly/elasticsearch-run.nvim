@@ -8,6 +8,15 @@ function M.setup(opts)
 	Config.setup(opts)
 end
 
+-- Helper function to find files on runtime path (for internal scripts)
+local function rtp_file(rel)
+	local matches = vim.api.nvim_get_runtime_file(rel, true)
+	if matches and #matches > 0 then
+		return matches[1]
+	end
+	return nil
+end
+
 -- State variables for the live-coding window
 local live_win_id = nil
 local live_buf_id = nil
@@ -80,7 +89,13 @@ end
 -- M.run: Executes simulation in a floating popup window.
 
 function M.run()
-	local script_path = vim.fn.expand("~/.config/nvim/scripts/es_simulate_runner.sh")
+	local cfg = Config.resolve()
+	local script_path = cfg.script_path
+	
+	if not script_path then
+		vim.notify("Elasticsearch runner script not found. Check plugin installation.", vim.log.levels.ERROR)
+		return
+	end
 
 	-- Prevent sending the popup contents if again running in the popup
 	-- Only set source_buf_id if we don't have one or if current buffer is not a popup
@@ -190,8 +205,131 @@ function M.run()
 	vim.fn.chanclose(job_id, "stdin")
 end
 
+-- M.run_with_logstash: Executes simulation with Logstash preprocessing in a floating popup window.
+function M.run_with_logstash()
+	local cfg = Config.resolve()
+	local logstash_processor_path = rtp_file("scripts/elasticsearch_run/logstash_direct_processor.sh")
+	
+	if not logstash_processor_path then
+		vim.notify("Logstash direct processor script not found. Check plugin installation.", vim.log.levels.ERROR)
+		return
+	end
+
+	-- Prevent sending the popup contents if again running in the popup
+	-- Only set source_buf_id if we don't have one or if current buffer is not a popup
+	if not source_buf_id or not vim.api.nvim_buf_is_valid(source_buf_id) then
+		source_buf_id = vim.api.nvim_get_current_buf()
+	elseif vim.api.nvim_get_current_buf() ~= popup_buf_id then
+		-- User is in a different buffer (not the popup), update source
+		source_buf_id = vim.api.nvim_get_current_buf()
+	end
+
+	local lines_to_send = validate_buffer_count()
+
+	if not lines_to_send then
+		return
+	end
+
+	-- Use the direct Logstash processor for integration
+	local job_id = create_job(logstash_processor_path, function(_, exit_code, stdout_data, stderr_data)
+		vim.schedule(function()
+			local display_data, title
+			if exit_code == 0 then
+				title = "Logstash → Elasticsearch Pipeline: SUCCESS"
+				display_data = stdout_data
+			else
+				title = "Logstash → Elasticsearch Pipeline: FAILURE (Exit Code: " .. exit_code .. ")"
+				display_data = { "--- STDERR ---" }
+				for _, line in ipairs(stderr_data) do
+					table.insert(display_data, line)
+				end
+
+				if #stdout_data > 0 then
+					table.insert(display_data, "--- STDOUT ---")
+					for _, line in ipairs(stdout_data) do
+						table.insert(display_data, line)
+					end
+				end
+
+				if #display_data <= 1 then
+					table.insert(display_data, "Logstash processing failed with no output.")
+				end
+			end
+
+			local width = math.floor(vim.o.columns * 0.8)
+			local height = math.min(#display_data + 4, math.floor(vim.o.lines * 0.8))
+			local row = math.floor((vim.o.lines - height) / 2)
+			local col = math.floor((vim.o.columns - width) / 2)
+
+			-- Set properties for output_buf
+			local opts = {
+				relative = "editor",
+				width = width,
+				height = height,
+				row = row,
+				col = col,
+				style = "minimal",
+				border = "single",
+				title = title,
+				title_pos = "center",
+			}
+
+			-- recreate the popup buffer if it doesn't exist or isn't valid
+			if not popup_buf_id or not vim.api.nvim_buf_is_valid(popup_buf_id) then
+				popup_buf_id = vim.api.nvim_create_buf(true, true)
+			end
+
+			-- if the popup window exists and is valid...
+			if popup_win_id and vim.api.nvim_win_is_valid(popup_win_id) then
+				-- refresh the popup window size/position/title
+				vim.api.nvim_win_set_config(popup_win_id, opts)
+				-- load the popup buffer in the popup window
+				if vim.api.nvim_win_get_buf(popup_win_id) ~= popup_buf_id then
+					vim.api.nvim_win_set_buf(popup_win_id, popup_buf_id)
+				end
+				-- Bring popup window to front
+				vim.api.nvim_win_set_config(popup_win_id, vim.tbl_extend("force", opts, { zindex = 200 }))
+			-- if no popup window exists or is valid...
+			else
+				-- open a new popup window
+				popup_win_id = vim.api.nvim_open_win(popup_buf_id, true, opts)
+				-- make sure the popup_win_id is deleted if the window is closed
+				vim.api.nvim_create_autocmd("WinClosed", {
+					pattern = tostring(popup_win_id),
+					callback = function()
+						popup_win_id = nil
+					end,
+				})
+			end
+
+			if exit_code == 0 then
+				-- Set json filetype for popup_buffer
+				vim.api.nvim_set_option_value("filetype", "json", { buf = popup_buf_id })
+			else
+				-- Set log filetype for popup buffer
+				vim.api.nvim_set_option_value("filetype", "log", { buf = popup_buf_id })
+			end
+			vim.api.nvim_buf_set_lines(popup_buf_id, 0, -1, false, display_data)
+		end)
+	end)
+
+	if not job_id or job_id <= 0 then
+		vim.notify("Failed to start Logstash batch processor job.", vim.log.levels.ERROR)
+		return
+	end
+
+	vim.api.nvim_chan_send(job_id, table.concat(lines_to_send, "\n"))
+	vim.fn.chanclose(job_id, "stdin")
+end
+
 function M.live_run()
-	local script_path = vim.fn.expand("~/.config/nvim/scripts/es_simulate_runner.sh")
+	local cfg = Config.resolve()
+	local script_path = cfg.script_path
+	
+	if not script_path then
+		vim.notify("Elasticsearch runner script not found. Check plugin installation.", vim.log.levels.ERROR)
+		return
+	end
 
 	-- Prevent sending contents from the live or popup buffer
 	-- Only set source_buf_id if we don't have one or if current buffer is not an output buffer
