@@ -10,7 +10,7 @@ import sys
 import docker
 
 CONTAINER_NAME = "elasticsearch-dev"
-DEFAULT_IMAGE = "docker.elastic.co/elasticsearch/elasticsearch:latest"
+DEFAULT_IMAGE = "docker.elastic.co/elasticsearch/elasticsearch:8.15.1"
 
 try:
     client = docker.from_env()

@@ -1,191 +1,120 @@
 #!/usr/bin/env python3
-
 # /// script
-# dependencies = [
-#     "docker",
-# ]
+# dependencies = ["docker"]
 # ///
-
 import os
 import sys
-
 import docker
+import argparse
+import shutil
 
+# ... (Constants and client setup remain the same) ...
 CONTAINER_NAME = "logstash-dev"
 DEFAULT_IMAGE = "docker.elastic.co/logstash/logstash:8.15.1"
-
+DEFAULT_PIPELINE = "default_pipeline.conf"
+CONFIG_LABEL = "com.elasticsearch-run.pipeline-config"
 try:
     client = docker.from_env()
 except docker.errors.DockerException:
     print("Error: Could not connect to the Docker daemon.", file=sys.stderr)
-    print("Is the Docker daemon running?", file=sys.stderr)
     sys.exit(1)
 
-
-def start_container(image=None):
+# ... (start_container function remains the same) ...
+def start_container(image=None, pipeline_file=None):
     if image is None:
         image = DEFAULT_IMAGE
-
+    desired_config_key = pipeline_file if pipeline_file else DEFAULT_PIPELINE
     try:
         container = client.containers.get(CONTAINER_NAME)
-
-        # Check if existing container uses the same image
-        try:
-            existing_image = (
-                container.image.tags[0] if container.image.tags else container.image.id
-            )
-        except (IndexError, AttributeError):
-            print(
-                f"Warning: Could not determine existing container image, recreating container",
-                file=sys.stderr,
-            )
-            existing_image = None
-        if existing_image != image:
-            print(f"Container '{CONTAINER_NAME}' exists but uses different image:")
-            print(f"  Existing: {existing_image}")
-            print(f"  Requested: {image}")
-            print("Recreating container with new image...")
-
-            # Stop and remove existing container
-            try:
-                if container.status == "running":
-                    container.stop(timeout=10)
-                container.remove()
-            except docker.errors.APIError as e:
-                print(
-                    f"Error stopping/removing existing container: {e}", file=sys.stderr
-                )
-                sys.exit(1)
-
-            create_container(name=CONTAINER_NAME, image=image)
-
-            print("Container recreated and started.")
-            return
-
-        # Same image, just start if not running
         if container.status == "running":
-            print(f"Container '{CONTAINER_NAME}' is already running.")
-            return
-        else:
-            print(f"Container '{CONTAINER_NAME}' exists, starting it...")
-            try:
-                container.start()
-                print("Container started.")
-            except docker.errors.APIError as e:
-                print(f"Error starting existing container: {e}", file=sys.stderr)
+            running_config_key = container.labels.get(CONFIG_LABEL, "unknown")
+            if running_config_key != desired_config_key:
+                print(f"Error: Container is running with a different pipeline ('{running_config_key}').", file=sys.stderr)
+                print(f"Please run 'uv run ./manage_logstash_container.py destroy' first to switch to '{desired_config_key}'.", file=sys.stderr)
                 sys.exit(1)
+            else:
+                print(f"Container '{CONTAINER_NAME}' is already running with the correct pipeline ('{running_config_key}').")
+                return
+        print(f"Container '{CONTAINER_NAME}' exists, starting it...", file=sys.stderr)
+        container.start()
+        print("Container started.")
     except docker.errors.NotFound:
-        print(f"Container '{CONTAINER_NAME}' not found.")
-        create_container(name=CONTAINER_NAME, image=image)
-        print(f"Container '{CONTAINER_NAME}' created and started.")
+        print(f"Container '{CONTAINER_NAME}' not found. Creating and starting...", file=sys.stderr)
+        create_container(name=CONTAINER_NAME, image=image, pipeline_file=pipeline_file)
+        print(f"Container '{CONTAINER_NAME}' created and started with pipeline: '{desired_config_key}'.")
 
 
-def stop_container(name=CONTAINER_NAME):
-    try:
-        container = client.containers.get(name)
-        if container.status == "running":
-            print(f"Stopping container '{name}'...")
-            try:
-                container.stop(timeout=10)
-                print("Container stopped.")
-            except docker.errors.APIError as e:
-                print(f"Error stopping container: {e}", file=sys.stderr)
-        else:
-            print(f"Container '{name}' is already stopped.")
-    except docker.errors.NotFound:
-        print(f"Container '{name}' not found.")
-
-
-def create_container(name, image):
-    # Create new container with requested image
+def create_container(name, image, pipeline_file=None):
     script_dir = os.path.dirname(os.path.abspath(__file__))
     config_dir = os.path.join(script_dir, "logstash_configs")
-    os.makedirs(config_dir, exist_ok=True)
+    
+    pipeline_to_mount = pipeline_file if pipeline_file else DEFAULT_PIPELINE
+    pipeline_source_path = os.path.join(config_dir, "conf.d", pipeline_to_mount)
+    if not os.path.exists(pipeline_source_path):
+        print(f"Error: Pipeline file not found at {pipeline_source_path}", file=sys.stderr)
+        sys.exit(1)
+
+    yml_source_path = os.path.join(config_dir, "logstash.yml")
+    if not os.path.exists(yml_source_path):
+        print(f"Error: logstash.yml not found at {yml_source_path}", file=sys.stderr)
+        sys.exit(1)
+    
+    volumes = {
+        yml_source_path: {"bind": "/usr/share/logstash/config/logstash.yml", "mode": "rw"},
+        pipeline_source_path: {"bind": "/usr/share/logstash/pipeline/logstash.conf", "mode": "rw"}
+    }
 
     client.containers.run(
         image=image,
         name=name,
-        ports={
-            "8080/tcp": 8080,
-            "9999/tcp": 9999,
-        },  # HTTP input and result output
-        volumes={
-            config_dir: {
-                "bind": "/etc/logstash/",
-                "mode": "ro",
-            }
-        },
-        environment=[
-            "xpack.monitoring.enabled=false",
-            "pipeline.batch.size=125",
-            "pipeline.batch.delay=5",
-            "pipeline.workers=2",
-            "queue.type=memory",
-            "pipeline.unsafe_shutdown=true",
-            "log.level=warn",
-            "http.host=0.0.0.0",
-        ],
+        ports={"8080/tcp": 8080},
+        volumes=volumes,
+        # THE FIX: Explicitly map host.docker.internal to the host gateway.
+        # This makes container-to-host communication reliable on all platforms.
+        extra_hosts={"host.docker.internal": "host-gateway"},
+        command=["--config.reload.automatic"],
+        labels={CONFIG_LABEL: pipeline_to_mount},
+        environment=["xpack.monitoring.enabled=false", "http.host=0.0.0.0"],
         detach=True,
         remove=False,
-        stdin_open=True,
     )
 
-
+# ... (destroy_container and stop_container functions remain the same) ...
 def destroy_container():
-    stop_container(CONTAINER_NAME)
     try:
         container = client.containers.get(CONTAINER_NAME)
-
-        # Clean up any temporary directories that might be mounted
-        try:
-            mounts = container.attrs.get("Mounts", [])
-            for mount in mounts:
-                if mount.get("Source", "").startswith("/tmp/logstash_output_"):
-                    temp_dir = mount["Source"]
-                    print(f"Cleaning up temporary directory: {temp_dir}")
-                    import shutil
-
-                    shutil.rmtree(temp_dir, ignore_errors=True)
-        except Exception as cleanup_error:
-            print(
-                f"Warning: Could not clean up temporary directories: {cleanup_error}",
-                file=sys.stderr,
-            )
-
-        print("Removing container...")
+        print(f"Stopping container '{CONTAINER_NAME}'...")
+        container.stop(timeout=10)
+        print(f"Removing container '{CONTAINER_NAME}'...")
         container.remove()
         print("Container removed.")
     except docker.errors.NotFound:
-        print(f"Container '{CONTAINER_NAME}' not found, nothing to remove.")
-    except Exception as e:
-        print(f"An error occurred during removal: {e}", file=sys.stderr)
+        print(f"Container '{CONTAINER_NAME}' not found.")
 
+def stop_container():
+    try:
+        container = client.containers.get(CONTAINER_NAME)
+        if container.status == "running":
+            print(f"Stopping container '{CONTAINER_NAME}'...")
+            container.stop(timeout=10)
+            print("Container stopped.")
+        else:
+            print(f"Container '{CONTAINER_NAME}' is already stopped.")
+    except docker.errors.NotFound:
+        print(f"Container '{CONTAINER_NAME}' not found.")
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print(
-            "Usage: manage_logstash_container.py [start|stop|destroy] [image]",
-            file=sys.stderr,
-        )
-        print(
-            "  start [image] - Start container (optionally with specific image)",
-            file=sys.stderr,
-        )
-        print("  stop          - Stop container", file=sys.stderr)
-        print("  destroy       - Stop and remove container", file=sys.stderr)
-        sys.exit(1)
-
-    command = sys.argv[1]
-    image = None
-    if len(sys.argv) > 2:
-        image = sys.argv[2]
-
-    if command == "start":
-        start_container(image)
-    elif command == "stop":
+    parser = argparse.ArgumentParser(description="Manage the Logstash development container.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    parser_start = subparsers.add_parser("start", help="Start or create the Logstash container.")
+    parser_start.add_argument("image", nargs="?", default=DEFAULT_IMAGE, help=f"The Docker image to use (default: {DEFAULT_IMAGE}).")
+    parser_start.add_argument("--pipeline", help=f"Specify a pipeline .conf file from 'logstash_configs/conf.d/'.")
+    subparsers.add_parser("stop", help="Stop the Logstash container.")
+    subparsers.add_parser("destroy", help="Stop and remove the container.")
+    args = parser.parse_args()
+    if args.command == "start":
+        start_container(image=args.image, pipeline_file=args.pipeline)
+    elif args.command == "stop":
         stop_container()
-    elif command == "destroy":
+    elif args.command == "destroy":
         destroy_container()
-    else:
-        print(f"Unknown command: {command}", file=sys.stderr)
-        sys.exit(1)

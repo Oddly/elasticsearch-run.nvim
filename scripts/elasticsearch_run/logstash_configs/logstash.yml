@@ -1,2 +1,4 @@
-pipeline.batch.size: 1
-pipeline.batch.delay: 1
+http.host: ${http.host}
+pipeline.batch.delay: 5
+pipeline.batch.size: 125
+xpack.monitoring.enabled: ${xpack.monitoring.enabled}
