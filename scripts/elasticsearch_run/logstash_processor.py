@@ -24,7 +24,7 @@ LOGSTASH_INPUT_URL = "http://localhost:8080"
 LISTENER_HOST = "0.0.0.0"
 LISTENER_PORT = 5001
 # Timeout in seconden. Hoe lang wachten we maximaal op alle resultaten?
-PROCESSING_TIMEOUT = 2
+PROCESSING_TIMEOUT = 3
 
 # --- Logging Setup ---
 # Verstuur alle logs naar stderr, zodat stdout schoon blijft voor de resultaten.
@@ -79,7 +79,7 @@ def main():
     # 1. Start de listener in een achtergrondthread.
     listener_thread = threading.Thread(target=run_listener_server, daemon=True)
     listener_thread.start()
-    time.sleep(0.1) # Geef de server even de tijd om te starten.
+    time.sleep(0.5) # Geef de server even de tijd om te starten.
 
     # 2. Lees alle documenten van stdin en voeg een uniek correlatie-ID toe.
     try:

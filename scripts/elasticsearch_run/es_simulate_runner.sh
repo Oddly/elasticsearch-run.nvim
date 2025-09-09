@@ -42,10 +42,15 @@ if [ -z "$docs" ]; then
     exit 1
 fi
 
+#echo "docs:"
+#echo "$docs"
+
 log "Processing $(echo "$docs" | wc -l) documents through Logstash..."
 
 logstash_results="$(echo "$docs" | uv run "$LOGSTASH_PROCESSOR_SCRIPT")"
 
+#echo "logstash_results:"
+#echo "$logstash_results"
 if [ -z "$logstash_results" ]; then
     log "ERROR: Logstash processor returned no results."
     exit 1
@@ -53,23 +58,39 @@ fi
 
 log "Logstash processing complete. Re-creating docs for Elasticsearch..."
 
-# --- REBUILD THE ES PAYLOAD ---
-# Re-assemble the Logstash results into the final array of "_source" objects
-# for the Elasticsearch simulate API. jq handles the 'null' values correctly.
-echo "$logstash_results"
-final_docs=$(echo "$logstash_results" | jq -s 'map(if . == null then null else { "_source": . } end)')
-echo "final_docs: $final_docs"
+# Convert NDJSON to array, preserving nulls and wrapping non-nulls in _source
+docs_array=$(echo "$logstash_results" | jq -s 'map(if . == null then { "_source": { null } } else {_source: .} end)')
 
-# Create the final payload for the ES simulator script
-final_payload=$(jq -n --argjson p "$pipeline_def" --argjson d "$final_docs" \
+# Create the final payload for the ES simulator script  
+final_payload=$(jq -n --argjson p "$pipeline_def" --argjson d "$docs_array" \
   '{ "pipeline": $p, "docs": $d }')
-#echo "final_payload: $final_payload"
+
+#echo $final_payload | jq .
 
 log "Running final Elasticsearch pipeline simulation..."
 
-# --- RUN ES SIMULATION ---
-# This script is assumed to call the _simulate API and return the final,
-# formatted JSON array.
-bash "$ES_SIMULATOR_SCRIPT" <<< "$final_payload"
+# Write payload to temporary file
+temp_file=$(mktemp)
+echo "$final_payload" > "$temp_file"
 
+# Use curl with file reference
+response=$(curl -s -X POST "http://localhost:9200/_ingest/pipeline/_simulate" \
+    -H "Content-Type: application/json" \
+    -d "@$temp_file")
+
+# Clean up temporary file
+rm "$temp_file"
+
+#response=$(curl -s -X POST "http://localhost:9200/_ingest/pipeline/_simulate" \
+#    -H "Content-Type: application/json" \
+#    -d "$final_payload")
+
+if echo "$response" | jq -e '.error' > /dev/null; then
+    echo "--- ELASTICSEARCH SIMULATION ERROR ---" >&2
+    echo "$response"
+    exit 1
+else
+    echo "$response" | jq '.docs[].doc._source'
+    exit 0
+fi 
 log "Simulation complete."
