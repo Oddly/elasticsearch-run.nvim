@@ -19,13 +19,21 @@ return {
     if cfg.script_path and vim.uv.fs_stat(cfg.script_path) then
       health.ok("runner script: " .. cfg.script_path)
     else
-      health.error("runner script missing (expected inside the plugin at scripts/elasticsearch_run/es_simulate_runner.sh)")
+      health.error("runner script missing (expected inside the plugin at scripts/elasticsearch_run/es_simulate_runner.py)")
     end
 
+    -- Note: With the Python conversion, container management is handled internally
+    -- These individual managers are only needed for manual container operations
     if cfg.es_manager_path and vim.uv.fs_stat(cfg.es_manager_path) then
       health.ok("es manager: " .. cfg.es_manager_path)
     else
-      health.warn("es manager missing (only needed for :ESContainerDestroy and related container commands)")
+      health.info("es manager not in runtime path (container management handled by main script)")
+    end
+    
+    if cfg.logstash_manager_path and vim.uv.fs_stat(cfg.logstash_manager_path) then
+      health.ok("logstash manager: " .. cfg.logstash_manager_path) 
+    else
+      health.info("logstash manager not in runtime path (container management handled by main script)")
     end
   end,
 }

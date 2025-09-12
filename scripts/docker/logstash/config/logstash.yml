@@ -1,4 +1,4 @@
-http.host: ${http.host}
+http.host: 0.0.0.0
 pipeline.batch.delay: 50
 pipeline.batch.size: 125
 pipeline.workers: ${PIPELINE_WORKERS}

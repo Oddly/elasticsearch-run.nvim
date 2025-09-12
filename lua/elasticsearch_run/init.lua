@@ -51,7 +51,17 @@ end
 local function create_job(script_path, on_complete)
 	local stdout_data, stderr_data = {}, {}
 
-	local job_id = vim.fn.jobstart({ "bash", script_path }, {
+	-- Get the directory of the current buffer for auto-pipeline detection
+	local buffer_dir = vim.fn.expand("%:p:h")
+	local cmd = { "uv", "run", script_path, "--quiet" }
+	
+	-- Add --cwd parameter if we have a valid buffer directory
+	if buffer_dir and buffer_dir ~= "" and vim.fn.isdirectory(buffer_dir) == 1 then
+		table.insert(cmd, "--cwd")
+		table.insert(cmd, buffer_dir)
+	end
+
+	local job_id = vim.fn.jobstart(cmd, {
 		on_stdout = function(_, data)
 			if data then
 				for _, line in ipairs(data) do
@@ -208,10 +218,10 @@ end
 -- M.run_with_logstash: Executes simulation with Logstash preprocessing in a floating popup window.
 function M.run_with_logstash()
 	local cfg = Config.resolve()
-	local logstash_processor_path = rtp_file("scripts/elasticsearch_run/logstash_direct_processor.sh")
+	local script_path = cfg.script_path
 	
-	if not logstash_processor_path then
-		vim.notify("Logstash direct processor script not found. Check plugin installation.", vim.log.levels.ERROR)
+	if not script_path then
+		vim.notify("Elasticsearch runner script not found. Check plugin installation.", vim.log.levels.ERROR)
 		return
 	end
 
@@ -230,8 +240,8 @@ function M.run_with_logstash()
 		return
 	end
 
-	-- Use the direct Logstash processor for integration
-	local job_id = create_job(logstash_processor_path, function(_, exit_code, stdout_data, stderr_data)
+	-- Use the main Python script (it handles Logstash internally)
+	local job_id = create_job(script_path, function(_, exit_code, stdout_data, stderr_data)
 		vim.schedule(function()
 			local display_data, title
 			if exit_code == 0 then
